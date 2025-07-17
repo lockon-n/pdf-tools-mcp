@@ -4,9 +4,9 @@ PDF Tools MCP Server
 A FastMCP-based PDF reading and manipulation tool server.
 """
 
-__version__ = "0.1.0"
-__author__ = "Your Name"
-__email__ = "your.email@example.com"
+__version__ = "0.1.1"
+__author__ = "Junlong Li"
+__email__ = "lockonlvange@gmail.com"
 
 from .server import (
     read_pdf_pages,
