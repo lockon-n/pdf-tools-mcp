@@ -25,6 +25,12 @@
 uv add pdf-tools-mcp
 ```
 
+如果 `uv add` 遇到依赖冲突，建议使用：
+
+```bash
+uvx tool install pdf-tools-mcp
+```
+
 #### 从源码安装
 
 ```bash
@@ -244,6 +250,12 @@ A FastMCP-based PDF reading and manipulation tool server that supports extractin
 
 ```bash
 uv add pdf-tools-mcp
+```
+
+If `uv add` encounters dependency conflicts, use:
+
+```bash
+uvx tool install pdf-tools-mcp
 ```
 
 #### Install from source
