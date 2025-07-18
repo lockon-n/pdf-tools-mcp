@@ -466,7 +466,14 @@ Issues and Pull Requests are welcome!
 
 ## Changelog
 
-### 0.1.0
+### 0.1.3
+- Add regex search functionality for PDF content
+- Add paginated search results with session management
+- Add search navigation (next/prev/go to page)
+- Add PDF content caching for improved performance
+- Add search session cleanup and memory management
+
+### 0.1.2
 - Initial release
 - Support for PDF text extraction
 - Support for PDF info retrieval

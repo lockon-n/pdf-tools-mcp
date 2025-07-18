@@ -1,4 +1,4 @@
-from typing import Any, List
+from typing import Any, List, Dict, Optional, Tuple
 import PyPDF2
 import io
 import os
@@ -7,10 +7,46 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 import logging
 import sys
+import re
+import uuid
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+import threading
 
 # Global variables
 mcp = FastMCP("pdf-tools")
 WORKSPACE_PATH = None
+
+# Search cache and session management
+@dataclass
+class SearchResult:
+    text: str
+    page_number: int
+    start_index: int
+    end_index: int
+    context_before: str
+    context_after: str
+
+@dataclass
+class SearchSession:
+    search_id: str
+    pdf_path: str
+    pattern: str
+    results: List[SearchResult]
+    current_page: int
+    page_size: int
+    total_results: int
+    last_accessed: datetime
+    cached_content: Optional[Dict[int, str]] = None
+
+# Global cache for search sessions and PDF content
+search_sessions: Dict[str, SearchSession] = {}
+pdf_content_cache: Dict[str, Dict[int, str]] = {}  # file_path -> {page_num -> content}
+cache_lock = threading.Lock()
+
+# Cache cleanup settings
+MAX_CACHE_AGE_MINUTES = 30
+MAX_CACHED_PDFS = 10
 
 def setup_server(workspace_path: str = None):
     """Setup the MCP server with optional workspace path"""
@@ -57,6 +93,95 @@ def validate_page_range(start_page: int, end_page: int, total_pages: int) -> tup
     
     return start_page, end_page
 
+def cleanup_cache():
+    """Clean up old search sessions and PDF content cache"""
+    with cache_lock:
+        current_time = datetime.now()
+        
+        # Remove old search sessions
+        expired_sessions = [
+            session_id for session_id, session in search_sessions.items()
+            if current_time - session.last_accessed > timedelta(minutes=MAX_CACHE_AGE_MINUTES)
+        ]
+        for session_id in expired_sessions:
+            del search_sessions[session_id]
+        
+        # Limit PDF cache size
+        if len(pdf_content_cache) > MAX_CACHED_PDFS:
+            # Remove oldest entries (simple strategy - could be improved with LRU)
+            oldest_keys = list(pdf_content_cache.keys())[:len(pdf_content_cache) - MAX_CACHED_PDFS + 1]
+            for key in oldest_keys:
+                del pdf_content_cache[key]
+
+def get_cached_pdf_content(pdf_path: str) -> Optional[Dict[int, str]]:
+    """Get cached PDF content by path"""
+    with cache_lock:
+        return pdf_content_cache.get(pdf_path)
+
+def cache_pdf_content(pdf_path: str, content: Dict[int, str]):
+    """Cache PDF content by path"""
+    with cache_lock:
+        # Only cleanup if cache is getting full
+        if len(pdf_content_cache) >= MAX_CACHED_PDFS:
+            cleanup_cache()
+        pdf_content_cache[pdf_path] = content
+
+def extract_all_text_from_pdf(pdf_path: str) -> Dict[int, str]:
+    """Extract text from all pages of a PDF and return as dict {page_num: text}"""
+    # Check cache first
+    cached_content = get_cached_pdf_content(pdf_path)
+    if cached_content is not None:
+        return cached_content
+    
+    try:
+        with open(pdf_path, 'rb') as file:
+            pdf_reader = PyPDF2.PdfReader(file)
+            content = {}
+            
+            for page_num in range(len(pdf_reader.pages)):
+                page = pdf_reader.pages[page_num]
+                text = page.extract_text()
+                content[page_num + 1] = text  # Store with 1-indexed page numbers
+            
+            # Cache the content
+            cache_pdf_content(pdf_path, content)
+            return content
+            
+    except Exception as e:
+        logging.error(f"Error extracting PDF text: {str(e)}")
+        return {}
+
+def find_regex_matches(text: str, pattern: str, page_number: int, context_size: int = 100) -> List[SearchResult]:
+    """Find all regex matches in text and return SearchResult objects with context"""
+    try:
+        matches = []
+        for match in re.finditer(pattern, text, re.IGNORECASE | re.MULTILINE):
+            start_idx = match.start()
+            end_idx = match.end()
+            
+            # Get context before and after the match
+            context_start = max(0, start_idx - context_size)
+            context_end = min(len(text), end_idx + context_size)
+            
+            context_before = text[context_start:start_idx]
+            context_after = text[end_idx:context_end]
+            matched_text = text[start_idx:end_idx]
+            
+            result = SearchResult(
+                text=matched_text,
+                page_number=page_number,
+                start_index=start_idx,
+                end_index=end_idx,
+                context_before=context_before,
+                context_after=context_after
+            )
+            matches.append(result)
+        
+        return matches
+    except re.error as e:
+        logging.error(f"Invalid regex pattern '{pattern}': {str(e)}")
+        return []
+
 def extract_text_from_pdf(pdf_content: bytes, start_page: int, end_page: int) -> str:
     """Extract text from PDF content for specified page range"""
     try:
@@ -84,6 +209,14 @@ def extract_text_from_pdf(pdf_content: bytes, start_page: int, end_page: int) ->
     except Exception as e:
         return f"Error processing PDF: {str(e)}"
 
+def validate_page_size(page_size: int) -> Tuple[int, str]:
+    """Validate page size and return corrected value with warning if needed"""
+    warning = ""
+    if page_size < 10 or page_size > 50:
+        warning = f"Warning: Page size {page_size} is out of range (10-50). Using default value 10.\n"
+        page_size = 10
+    return page_size, warning
+
 @mcp.tool()
 async def read_pdf_pages(pdf_file_path: str, start_page: int = 1, end_page: int = 1) -> str:
     """Read content from PDF file for specified page range.
@@ -107,11 +240,11 @@ async def read_pdf_pages(pdf_file_path: str, start_page: int = 1, end_page: int 
         warning = ""
     
     try:
-        # Read PDF file
+        # Read PDF file using original method to avoid complexity
         with open(pdf_file_path, 'rb') as file:
             pdf_content = file.read()
         
-        # Extract text
+        # Extract text using the original function
         result = extract_text_from_pdf(pdf_content, start_page, end_page)
         return warning + result if warning else result
         
@@ -138,7 +271,7 @@ async def get_pdf_info(pdf_file_path: str) -> str:
         with open(pdf_file_path, 'rb') as file:
             pdf_reader = PyPDF2.PdfReader(file)
             
-            # 在 with 块内部获取所有需要的信息
+            # Get all needed information within the with block
             total_pages = len(pdf_reader.pages)
             info = pdf_reader.metadata
             
@@ -250,6 +383,242 @@ async def extract_pdf_pages(source_path: str, page_numbers: List[int], output_pa
         return f"Error: File not found '{source_path}'"
     except Exception as e:
         return f"Error extracting pages: {str(e)}"
+
+@mcp.tool()
+async def search_pdf_content(pdf_file_path: str, pattern: str, page_size: int = 10) -> str:
+    """Search for regex pattern in PDF content and return paginated results.
+    
+    Args:
+        pdf_file_path: Path to the PDF file
+        pattern: Regular expression pattern to search for
+        page_size: Number of results per page (10-50, default: 10)
+    
+    Returns:
+        Search results with UUID for pagination, or error message
+    """
+    # Validate path
+    is_valid, error_msg = validate_path(pdf_file_path)
+    if not is_valid:
+        return error_msg
+    
+    # Validate page size
+    page_size, warning = validate_page_size(page_size)
+    
+    try:
+        # Extract all text from PDF
+        pdf_content = extract_all_text_from_pdf(pdf_file_path)
+        if not pdf_content:
+            return "Error: Could not extract text from PDF or PDF is empty"
+        
+        # Find all matches across all pages
+        all_results = []
+        for page_num, page_text in pdf_content.items():
+            page_matches = find_regex_matches(page_text, pattern, page_num)
+            all_results.extend(page_matches)
+        
+        if not all_results:
+            return f"No matches found for pattern: {pattern}"
+        
+        # Create search session
+        search_id = str(uuid.uuid4())[:8]  # Short UUID
+        session = SearchSession(
+            search_id=search_id,
+            pdf_path=pdf_file_path,
+            pattern=pattern,
+            results=all_results,
+            current_page=1,
+            page_size=page_size,
+            total_results=len(all_results),
+            last_accessed=datetime.now(),
+            cached_content=pdf_content
+        )
+        
+        with cache_lock:
+            # Only cleanup if we have too many sessions
+            if len(search_sessions) > 20:  # reasonable limit
+                cleanup_cache()
+            search_sessions[search_id] = session
+        
+        # Format first page of results
+        start_idx = 0
+        end_idx = min(page_size, len(all_results))
+        current_results = all_results[start_idx:end_idx]
+        
+        result = warning if warning else ""
+        result += f"Search ID: {search_id}\n"
+        result += f"Pattern: {pattern}\n"
+        result += f"Total matches: {len(all_results)}\n"
+        result += f"Page: 1/{(len(all_results) + page_size - 1) // page_size}\n"
+        result += f"Results per page: {page_size}\n\n"
+        
+        for i, match in enumerate(current_results, 1):
+            result += f"Match {start_idx + i}:\n"
+            result += f"  Page: {match.page_number}\n"
+            result += f"  Text: \"{match.text}\"\n"
+            result += f"  Context: ...{match.context_before}[{match.text}]{match.context_after}...\n\n"
+        
+        if len(all_results) > page_size:
+            result += f"Use search_pdf_next_page, search_pdf_prev_page, or search_pdf_go_page with search_id '{search_id}' to navigate."
+        
+        return result
+        
+    except FileNotFoundError:
+        return f"Error: File not found '{pdf_file_path}'"
+    except Exception as e:
+        return f"Error searching PDF: {str(e)}"
+
+@mcp.tool()
+async def search_pdf_next_page(search_id: str) -> str:
+    """Get next page of search results.
+    
+    Args:
+        search_id: Search session ID from previous search
+    
+    Returns:
+        Next page of search results or error message
+    """
+    with cache_lock:
+        session = search_sessions.get(search_id)
+        if not session:
+            return f"Error: Search session '{search_id}' not found or expired"
+        
+        session.last_accessed = datetime.now()
+        
+        total_pages = (len(session.results) + session.page_size - 1) // session.page_size
+        if session.current_page >= total_pages:
+            return f"Already on last page ({session.current_page}/{total_pages})"
+        
+        session.current_page += 1
+        
+        start_idx = (session.current_page - 1) * session.page_size
+        end_idx = min(start_idx + session.page_size, len(session.results))
+        current_results = session.results[start_idx:end_idx]
+        
+        result = f"Search ID: {search_id}\n"
+        result += f"Pattern: {session.pattern}\n"
+        result += f"Total matches: {session.total_results}\n"
+        result += f"Page: {session.current_page}/{total_pages}\n\n"
+        
+        for i, match in enumerate(current_results, 1):
+            result += f"Match {start_idx + i}:\n"
+            result += f"  Page: {match.page_number}\n"
+            result += f"  Text: \"{match.text}\"\n"
+            result += f"  Context: ...{match.context_before}[{match.text}]{match.context_after}...\n\n"
+        
+        return result
+
+@mcp.tool()
+async def search_pdf_prev_page(search_id: str) -> str:
+    """Get previous page of search results.
+    
+    Args:
+        search_id: Search session ID from previous search
+    
+    Returns:
+        Previous page of search results or error message
+    """
+    with cache_lock:
+        session = search_sessions.get(search_id)
+        if not session:
+            return f"Error: Search session '{search_id}' not found or expired"
+        
+        session.last_accessed = datetime.now()
+        
+        if session.current_page <= 1:
+            return f"Already on first page (1)"
+        
+        session.current_page -= 1
+        
+        start_idx = (session.current_page - 1) * session.page_size
+        end_idx = min(start_idx + session.page_size, len(session.results))
+        current_results = session.results[start_idx:end_idx]
+        
+        total_pages = (len(session.results) + session.page_size - 1) // session.page_size
+        
+        result = f"Search ID: {search_id}\n"
+        result += f"Pattern: {session.pattern}\n"
+        result += f"Total matches: {session.total_results}\n"
+        result += f"Page: {session.current_page}/{total_pages}\n\n"
+        
+        for i, match in enumerate(current_results, 1):
+            result += f"Match {start_idx + i}:\n"
+            result += f"  Page: {match.page_number}\n"
+            result += f"  Text: \"{match.text}\"\n"
+            result += f"  Context: ...{match.context_before}[{match.text}]{match.context_after}...\n\n"
+        
+        return result
+
+@mcp.tool()
+async def search_pdf_go_page(search_id: str, page_number: int) -> str:
+    """Go to specific page of search results.
+    
+    Args:
+        search_id: Search session ID from previous search
+        page_number: Page number to go to (1-indexed)
+    
+    Returns:
+        Specified page of search results or error message
+    """
+    with cache_lock:
+        session = search_sessions.get(search_id)
+        if not session:
+            return f"Error: Search session '{search_id}' not found or expired"
+        
+        session.last_accessed = datetime.now()
+        
+        total_pages = (len(session.results) + session.page_size - 1) // session.page_size
+        
+        if page_number < 1 or page_number > total_pages:
+            return f"Error: Page number {page_number} is out of range (1-{total_pages})"
+        
+        session.current_page = page_number
+        
+        start_idx = (session.current_page - 1) * session.page_size
+        end_idx = min(start_idx + session.page_size, len(session.results))
+        current_results = session.results[start_idx:end_idx]
+        
+        result = f"Search ID: {search_id}\n"
+        result += f"Pattern: {session.pattern}\n"
+        result += f"Total matches: {session.total_results}\n"
+        result += f"Page: {session.current_page}/{total_pages}\n\n"
+        
+        for i, match in enumerate(current_results, 1):
+            result += f"Match {start_idx + i}:\n"
+            result += f"  Page: {match.page_number}\n"
+            result += f"  Text: \"{match.text}\"\n"
+            result += f"  Context: ...{match.context_before}[{match.text}]{match.context_after}...\n\n"
+        
+        return result
+
+@mcp.tool()
+async def search_pdf_info(search_id: str) -> str:
+    """Get information about a search session.
+    
+    Args:
+        search_id: Search session ID from previous search
+    
+    Returns:
+        Information about the search session
+    """
+    with cache_lock:
+        session = search_sessions.get(search_id)
+        if not session:
+            return f"Error: Search session '{search_id}' not found or expired"
+        
+        session.last_accessed = datetime.now()
+        
+        total_pages = (len(session.results) + session.page_size - 1) // session.page_size
+        
+        result = f"Search Session Information:\n"
+        result += f"Search ID: {search_id}\n"
+        result += f"PDF Path: {session.pdf_path}\n"
+        result += f"Pattern: {session.pattern}\n"
+        result += f"Total matches: {session.total_results}\n"
+        result += f"Current page: {session.current_page}/{total_pages}\n"
+        result += f"Results per page: {session.page_size}\n"
+        result += f"Last accessed: {session.last_accessed.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        
+        return result
 
 def main():
     """Main function to run the MCP server"""
