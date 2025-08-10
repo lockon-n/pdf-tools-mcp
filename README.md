@@ -16,6 +16,9 @@
 - 📊 获取 PDF 文件的基本信息
 - 🔗 合并多个 PDF 文件
 - ✂️ 提取 PDF 的特定页面
+- 🔍 正则表达式搜索功能，支持分页查看结果
+- 🌐 **URL 支持** - 支持直接从 URL 读取和操作 PDF 文件
+- 💾 智能缓存机制，相同 URL 的 PDF 自动复用临时文件
 
 ### 安装
 
@@ -58,7 +61,9 @@ uv sync
         "run",
         "pdf-tools-mcp",
         "--workspace_path",
-        "</your/workspace/directory>"
+        "</your/workspace/directory>",
+        "--tempfile_dir",
+        "</your/temp/directory>"
       ]
     }
   }
@@ -75,7 +80,9 @@ uv sync
       "args": [
         "pdf-tools-mcp",
         "--workspace_path",
-        "</your/workspace/directory>"
+        "</your/workspace/directory>",
+        "--tempfile_dir",
+        "</your/temp/directory>"
       ]
     }
   }
@@ -92,8 +99,8 @@ uv sync
 # 基本使用
 pdf-tools-mcp
 
-# 指定工作目录
-pdf-tools-mcp --workspace_path /path/to/workspace
+# 指定工作目录和临时文件目录
+pdf-tools-mcp --workspace_path /path/to/workspace --tempfile_dir /path/to/temp
 ```
 
 #### 作为 Python 包
@@ -101,14 +108,14 @@ pdf-tools-mcp --workspace_path /path/to/workspace
 ```python
 from pdf_tools_mcp import read_pdf_pages, get_pdf_info, merge_pdfs, extract_pdf_pages
 
-# 读取 PDF 页面
-result = await read_pdf_pages("document.pdf", 1, 5)
+# 读取 PDF 页面（支持 URL）
+result = await read_pdf_pages("https://example.com/document.pdf", 1, 5)
 
-# 获取 PDF 信息
+# 获取 PDF 信息（支持 URL）
 info = await get_pdf_info("document.pdf")
 
-# 合并 PDF 文件
-result = await merge_pdfs(["file1.pdf", "file2.pdf"], "merged.pdf")
+# 合并 PDF 文件（支持 URL 和本地文件混合）
+result = await merge_pdfs(["file1.pdf", "https://example.com/file2.pdf"], "merged.pdf")
 
 # 提取特定页面
 result = await extract_pdf_pages("source.pdf", [1, 3, 5], "extracted.pdf")
@@ -120,24 +127,30 @@ result = await extract_pdf_pages("source.pdf", [1, 3, 5], "extracted.pdf")
 读取 PDF 文件指定页面范围的内容
 
 **参数:**
-- `pdf_file_path` (str): PDF 文件路径
+- `pdf_file_path` (str): PDF 文件路径或 URL
 - `start_page` (int, 默认 1): 起始页码
 - `end_page` (int, 默认 1): 结束页码
 
+**URL 支持:**
+- 支持 `http://` 和 `https://` 协议的 URL
+- 自动下载 PDF 文件到临时目录
+- 相同 URL 会复用已下载的文件
+- 支持 PDF 文件格式验证
+
 **示例:**
 ```python
-# 读取第 1-5 页
+# 读取本地文件第 1-5 页
 result = await read_pdf_pages("document.pdf", 1, 5)
 
-# 读取第 10 页
-result = await read_pdf_pages("document.pdf", 10, 10)
+# 读取 URL 中的 PDF 第 10 页
+result = await read_pdf_pages("https://example.com/document.pdf", 10, 10)
 ```
 
 #### 2. get_pdf_info
 获取 PDF 文件的基本信息
 
 **参数:**
-- `pdf_file_path` (str): PDF 文件路径
+- `pdf_file_path` (str): PDF 文件路径或 URL
 
 **返回信息:**
 - 总页数
@@ -150,16 +163,16 @@ result = await read_pdf_pages("document.pdf", 10, 10)
 合并多个 PDF 文件
 
 **参数:**
-- `pdf_paths` (List[str]): 要合并的 PDF 文件路径列表
-- `output_path` (str): 合并后的输出文件路径
+- `pdf_paths` (List[str]): 要合并的 PDF 文件路径列表（支持 URL 和本地文件混合）
+- `output_path` (str): 合并后的输出文件路径（必须是本地路径）
 
 #### 4. extract_pdf_pages
 从 PDF 中提取特定页面
 
 **参数:**
-- `source_path` (str): 源 PDF 文件路径
+- `source_path` (str): 源 PDF 文件路径或 URL
 - `page_numbers` (List[int]): 要提取的页码列表（从 1 开始）
-- `output_path` (str): 输出文件路径
+- `output_path` (str): 输出文件路径（必须是本地路径）
 
 ### 错误处理
 
@@ -185,12 +198,20 @@ print(content)
 content = await read_pdf_pages("sample.pdf", 10, 10)
 print(content)
 
-# 合并多个 PDF
-result = await merge_pdfs(["part1.pdf", "part2.pdf", "part3.pdf"], "complete.pdf")
+# 使用 URL 读取 PDF
+content = await read_pdf_pages("https://example.com/sample.pdf", 1, 3)
+print(content)
+
+# 合并多个 PDF（混合本地文件和 URL）
+result = await merge_pdfs([
+    "part1.pdf", 
+    "https://example.com/part2.pdf", 
+    "part3.pdf"
+], "complete.pdf")
 print(result)
 
-# 提取特定页面
-result = await extract_pdf_pages("source.pdf", [1, 3, 5, 7], "selected.pdf")
+# 从 URL 的 PDF 提取特定页面
+result = await extract_pdf_pages("https://example.com/source.pdf", [1, 3, 5, 7], "selected.pdf")
 print(result)
 ```
 
@@ -201,6 +222,12 @@ print(result)
 - 返回结果会显示 PDF 总页数和实际提取的页面范围
 - 支持各种语言的 PDF 文档
 - 建议一次读取的页面数不超过 50 页，以避免性能问题
+- **URL 支持说明**:
+  - 支持 HTTP 和 HTTPS 协议的 URL
+  - URL 中的 PDF 会被下载到临时目录（默认：`~/.pdf_tools_temp`）
+  - 相同的 URL 会复用已下载的文件，避免重复下载
+  - 下载的文件会进行 PDF 格式验证
+  - 输出文件路径（如合并、提取功能）必须是本地路径，不能是 URL
 
 ### 开发
 
@@ -243,6 +270,9 @@ A FastMCP-based PDF reading and manipulation tool server that supports extractin
 - 📊 Get basic information about PDF files
 - 🔗 Merge multiple PDF files
 - ✂️ Extract specific pages from PDFs
+- 🔍 Regular expression search functionality with paginated results
+- 🌐 **URL Support** - Direct support for reading and manipulating PDF files from URLs
+- 💾 Smart caching mechanism to automatically reuse temporary files for the same URLs
 
 ### Installation
 
@@ -285,7 +315,9 @@ Add to your `~/.config/claude/claude_desktop_config.json` (Linux/Windows) or `~/
         "run",
         "pdf-tools-mcp",
         "--workspace_path",
-        "</your/workspace/directory>"
+        "</your/workspace/directory>",
+        "--tempfile_dir",
+        "</your/temp/directory>"
       ]
     }
   }
@@ -302,7 +334,9 @@ Add to your `~/.config/claude/claude_desktop_config.json` (Linux/Windows) or `~/
       "args": [
         "pdf-tools-mcp",
         "--workspace_path",
-        "</your/workspace/directory>"
+        "</your/workspace/directory>",
+        "--tempfile_dir",
+        "</your/temp/directory>"
       ]
     }
   }
@@ -319,8 +353,8 @@ In case it's not working or showing in the UI, clear your cache via `uv cache cl
 # Basic usage
 pdf-tools-mcp
 
-# Specify workspace directory
-pdf-tools-mcp --workspace_path /path/to/workspace
+# Specify workspace directory and temporary file directory
+pdf-tools-mcp --workspace_path /path/to/workspace --tempfile_dir /path/to/temp
 ```
 
 #### As a Python package
@@ -328,14 +362,14 @@ pdf-tools-mcp --workspace_path /path/to/workspace
 ```python
 from pdf_tools_mcp import read_pdf_pages, get_pdf_info, merge_pdfs, extract_pdf_pages
 
-# Read PDF pages
-result = await read_pdf_pages("document.pdf", 1, 5)
+# Read PDF pages (URL support)
+result = await read_pdf_pages("https://example.com/document.pdf", 1, 5)
 
-# Get PDF info
+# Get PDF info (URL support)
 info = await get_pdf_info("document.pdf")
 
-# Merge PDF files
-result = await merge_pdfs(["file1.pdf", "file2.pdf"], "merged.pdf")
+# Merge PDF files (mixed URLs and local files)
+result = await merge_pdfs(["file1.pdf", "https://example.com/file2.pdf"], "merged.pdf")
 
 # Extract specific pages
 result = await extract_pdf_pages("source.pdf", [1, 3, 5], "extracted.pdf")
@@ -347,24 +381,30 @@ result = await extract_pdf_pages("source.pdf", [1, 3, 5], "extracted.pdf")
 Read content from specified page ranges of a PDF file
 
 **Parameters:**
-- `pdf_file_path` (str): PDF file path
+- `pdf_file_path` (str): PDF file path or URL
 - `start_page` (int, default 1): Starting page number
 - `end_page` (int, default 1): Ending page number
 
+**URL Support:**
+- Supports `http://` and `https://` protocol URLs
+- Automatically downloads PDF files to temporary directory
+- Reuses downloaded files for the same URLs
+- Includes PDF file format validation
+
 **Example:**
 ```python
-# Read pages 1-5
+# Read pages 1-5 from local file
 result = await read_pdf_pages("document.pdf", 1, 5)
 
-# Read page 10
-result = await read_pdf_pages("document.pdf", 10, 10)
+# Read page 10 from URL
+result = await read_pdf_pages("https://example.com/document.pdf", 10, 10)
 ```
 
 #### 2. get_pdf_info
 Get basic information about a PDF file
 
 **Parameters:**
-- `pdf_file_path` (str): PDF file path
+- `pdf_file_path` (str): PDF file path or URL
 
 **Returns:**
 - Total page count
@@ -377,16 +417,16 @@ Get basic information about a PDF file
 Merge multiple PDF files
 
 **Parameters:**
-- `pdf_paths` (List[str]): List of PDF file paths to merge
-- `output_path` (str): Output file path for the merged PDF
+- `pdf_paths` (List[str]): List of PDF file paths to merge (supports mixed URLs and local files)
+- `output_path` (str): Output file path for the merged PDF (must be local path)
 
 #### 4. extract_pdf_pages
 Extract specific pages from a PDF
 
 **Parameters:**
-- `source_path` (str): Source PDF file path
+- `source_path` (str): Source PDF file path or URL
 - `page_numbers` (List[int]): List of page numbers to extract (1-based)
-- `output_path` (str): Output file path
+- `output_path` (str): Output file path (must be local path)
 
 ### Error Handling
 
@@ -412,12 +452,20 @@ print(content)
 content = await read_pdf_pages("sample.pdf", 10, 10)
 print(content)
 
-# Merge multiple PDFs
-result = await merge_pdfs(["part1.pdf", "part2.pdf", "part3.pdf"], "complete.pdf")
+# Read PDF from URL
+content = await read_pdf_pages("https://example.com/sample.pdf", 1, 3)
+print(content)
+
+# Merge multiple PDFs (mixed local files and URLs)
+result = await merge_pdfs([
+    "part1.pdf", 
+    "https://example.com/part2.pdf", 
+    "part3.pdf"
+], "complete.pdf")
 print(result)
 
-# Extract specific pages
-result = await extract_pdf_pages("source.pdf", [1, 3, 5, 7], "selected.pdf")
+# Extract specific pages from URL PDF
+result = await extract_pdf_pages("https://example.com/source.pdf", [1, 3, 5, 7], "selected.pdf")
 print(result)
 ```
 
@@ -428,6 +476,12 @@ print(result)
 - Results show total PDF page count and actual extracted page range
 - Supports PDF documents in various languages
 - Recommended to read no more than 50 pages at a time to avoid performance issues
+- **URL Support Notes**:
+  - Supports HTTP and HTTPS protocol URLs
+  - PDFs from URLs are downloaded to a temporary directory (default: `~/.pdf_tools_temp`)
+  - Same URLs reuse downloaded files to avoid duplicate downloads
+  - Downloaded files undergo PDF format validation
+  - Output file paths (for merge, extract functions) must be local paths, not URLs
 
 ### Development
 
@@ -465,6 +519,22 @@ MIT License
 Issues and Pull Requests are welcome!
 
 ## Changelog
+
+### 0.1.4
+- **🌐 URL Support**: Add support for reading PDF files directly from URLs
+  - Support for HTTP and HTTPS protocols
+  - Automatic PDF download to temporary directory with UUID naming
+  - Smart caching mechanism to reuse downloaded files for same URLs
+  - PDF format validation (magic bytes, PyPDF2 compatibility check)
+  - URL to temporary file mapping management with JSON storage
+- **⚙️ Configuration**: Add `--tempfile_dir` parameter for custom temporary directory
+- **🔧 Enhanced Functions**: All main functions now support URLs:
+  - `read_pdf_pages`: Read from URLs or local files
+  - `get_pdf_info`: Get info from URLs or local files
+  - `search_pdf_content`: Search in URLs or local files
+  - `merge_pdfs`: Merge mixed URLs and local files
+  - `extract_pdf_pages`: Extract from URLs to local files
+- **📚 Documentation**: Updated README with URL usage examples and configuration
 
 ### 0.1.3
 - Add regex search functionality for PDF content
